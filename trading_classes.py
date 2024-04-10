@@ -53,15 +53,20 @@ class product:
         self.open_order_price = 0
         self.close_order_price = 0
 
+        self.time_order_open = None
+        self.order_ID = None
+
+        self.selling_state = False
+
     def spread(self):
-        return self.bid - self.ask
+        return self.ask - self.bid
 
     def process_data(self, data):
 
         self.bid = data[self.ticker]['bidPrice']
         self.ask = data[self.ticker]['askPrice']
         self.spreads.append(self.ask - self.bid)
-        self._smart_price('SELL')
+        #self._smart_price('SELL')
 
     def avg_spread(self):
 
@@ -85,24 +90,59 @@ class product:
             selling_price_ladder = [self.ask]
             middle_market_price = self.ask - (spread_units * min_unit)
 
-            while True:
-                price = selling_price_ladder[-1] - min_unit
-                if price > middle_market_price:
+            new_price = self.close_order_price - min_unit
+
+            if new_price > middle_market_price:
+                new_lower_price = round(new_price, 2)
+                return new_lower_price
+
+            else:
+                return self.close_order_price
+
+
+            '''while True:
+                price = round(selling_price_ladder[-1] - min_unit, 2)
+
+                if price > middle_market_price and len(selling_price_ladder) < 10:
                     selling_price_ladder.append(price)
                 else:
-                    break
-
-            print(selling_price_ladder)
+                    break'''
 
 
-            return self.ask
+
+
+    def generate_order_ID(self):
+
+        data = tdc.get_account_orders()
+        for order in data:
+            orderLegCollection = order['orderLegCollection'][0]
+            symbol = orderLegCollection['instrument']['symbol']
+
+            if symbol == self.ticker:
+                self.order_ID = order['orderId']
+            else:
+                pass
+
+
 
     def close_position(self, paper=True):
 
         if paper:
+
             print('SELLING ORDER TO CLOSE AT --> ' + str(self.ask))
             self.open = True
             self.close_order_price = self.ask
+
+        elif self.selling_state:
+
+            new_price = self._smart_price(buy_sell='SELL')
+            tdc.equity_order(price=new_price, stock=self.ticker, buysell='SELL', amount=self.shares)
+            print('SELLING ORDER TO CLOSE AT --> ' + str(self.ask))
+            self.open = True
+            self.close_order_price = new_price
+            self.time_order_open = time.time()
+            self.generate_order_ID()
+            return
 
         else:
 
@@ -110,6 +150,8 @@ class product:
             print('SELLING ORDER TO CLOSE AT --> ' + str(self.ask))
             self.open = True
             self.close_order_price = self.ask
+            self.time_order_open = time.time()
+            self.generate_order_ID()
             return
 
     def open_position(self, paper=True):
@@ -126,15 +168,39 @@ class product:
             print('PURCHASE ORDER TO OPEN AT --> '+ str(self.bid))
             self.open = True
             self.open_order_price = self.bid
+            self.time_order_open = time.time()
+            self.generate_order_ID()
             return
 
 
     def maintain_buy_order(self):
 
+        self.selling_state = False
+
+
+
 
         return
 
     def maintain_sell_order(self):
+        self.selling_state = True
+        # get order ID
+
+        t_diff = time.time() - self.time_order_open # time diff in seconds since order is opened
+
+        if t_diff > 5: # if order has been open for more than 3 seconds
+
+            p = self._smart_price(buy_sell="SELL")
+
+            if p == self.close_order_price: # we don't want to cancel the order if there is no better price
+                pass
+            else:
+
+                tdc.cancel_option_order(OID=self.order_ID)
+            # cancel order
+            # test conditions will launch close position.
+            # close position will read that selling state is true, it
+            # will look at the previous order price and place a new order just below it from smart_order fx
         return
 
 
@@ -212,8 +278,10 @@ class portfolio:
             else:
                 #position is false
                 position_exists = False
+                self.object_product_mapping[ticker].selling_state = False
 
             if self.object_product_mapping[ticker].position is not position_exists:  # old state is not new state
+
                 self.object_product_mapping[ticker].open = False
                 self.object_product_mapping[ticker].position = position_exists
 
